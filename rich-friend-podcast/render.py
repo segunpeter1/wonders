@@ -92,9 +92,10 @@ def face(pen, x, y, r, look, facing, eyes="open", mouth=0.0, brows=None, t=0.0):
     ex = x + facing * r * 0.3
     for dx in (-0.32, 0.32):
         cx, cy = ex + dx * r, y - r * 0.15
-        if eyes == "closed" or eyes == "happy":
-            pen.arc(cx, cy + (r * 0.06 if eyes == "happy" else 0), r * 0.15, r * 0.12, 200 if eyes == "happy" else 20,
-                    340 if eyes == "happy" else 160, width=5)
+        if eyes in ("closed", "happy", "laughcry"):
+            hp = eyes != "closed"
+            pen.arc(cx, cy + (r * 0.06 if hp else 0), r * 0.15, r * 0.12, 200 if hp else 20,
+                    340 if hp else 160, width=5)
         elif eyes == "huge":
             pen.ellipse(cx, cy - r * 0.04, r * 0.22, r * 0.28, fill=(255, 255, 255), width=5)
             pen.ellipse(cx + facing * r * 0.03, cy - r * 0.04, r * 0.06, r * 0.06, fill=INK, outline=None)
@@ -109,7 +110,7 @@ def face(pen, x, y, r, look, facing, eyes="open", mouth=0.0, brows=None, t=0.0):
             pen.ellipse(cx, cy, r * 0.13, r * 0.15, fill=(255, 255, 255), width=4)
             pen.ellipse(cx + facing * r * 0.05, cy, r * 0.07, r * 0.08, fill=INK, outline=None)
             pen.ellipse(cx + facing * r * 0.02, cy - r * 0.04, r * 0.025, r * 0.025, fill=(255, 255, 255), outline=None)
-        if eyes == "cry":
+        if eyes in ("cry", "laughcry"):
             for k in range(2):
                 ty = cy + r * 0.25 + ((t * 300 + k * 40) % (r * 1.2))
                 pen.ellipse(cx, ty, r * 0.06, r * 0.09, fill=(120, 180, 255), width=2)
@@ -160,7 +161,7 @@ POSES = {
 
 
 def person(pen, x, hip_y, s, look, facing=1, pose="rest", mouth=0.0, eyes="open", brows=None, t=0.0,
-           sitting=False, lean=0.0, walk=False, prop=None):
+           sitting=False, lean=0.0, walk=False, prop=None, kick=0.0):
     r, T, ua, fa = 40 * s, 95 * s, 50 * s, 48 * s
     hc = look["pants"]
     if walk:
@@ -188,7 +189,7 @@ def person(pen, x, hip_y, s, look, facing=1, pose="rest", mouth=0.0, eyes="open"
     # legs
     if sitting:
         for k, off in enumerate((-8, 8)):
-            kx, ky = x + facing * 52 * s, hip_y + off * s * 0.3
+            kx, ky = x + facing * 52 * s, hip_y + off * s * 0.3 - kick * 28 * s * abs(math.sin(t * 18 + k * 1.6))
             fx, fy = kx + facing * 6 * s, hip_y + 58 * s
             pen.line([(x, hip_y), (kx, ky), (fx, fy)], width=12, fill=hc)
             pen.ellipse(fx + facing * 9 * s, fy, 15 * s, 8 * s, fill=(250, 250, 250), width=5)
