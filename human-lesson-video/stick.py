@@ -14,7 +14,14 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw
 
+import importlib.util
+
 import render as hl  # captions + mouth track from the 3D version
+
+_st = importlib.util.spec_from_file_location("st_render", Path(__file__).parent.parent / "smooth-talker-video" / "render.py")
+st = importlib.util.module_from_spec(_st)
+_st.loader.exec_module(st)
+import cv2
 
 W, H, FPS, END = hl.W, hl.H, hl.FPS, hl.END
 SS = 2  # supersampling for smooth lines
@@ -52,11 +59,17 @@ def kick(t, t0, d):
 
 
 class Pen:
-    """Draws in world coordinates through a camera (centre cx, cy and zoom)."""
+    """Draws in world coordinates through a camera, with a sketchy hand-drawn hand.
 
-    def __init__(self, img, cx, cy, z, sx=0.0, sy=0.0):
+    Every stroke is drawn twice with a little jitter, fills are slightly off
+    the outline like marker colouring, and circles are wobbly. The jitter is
+    seeded per drawing so the lines "boil" from drawing to drawing.
+    """
+
+    def __init__(self, img, cx, cy, z, sx=0.0, sy=0.0, seed=0):
         self.d = ImageDraw.Draw(img)
         self.cx, self.cy, self.z = cx - sx / z, cy - sy / z, z
+        self.rng = np.random.default_rng(seed)
 
     def p(self, x, y):
         return ((x - self.cx) * self.z + W / 2) * SS, ((y - self.cy) * self.z + H / 2) * SS
@@ -64,28 +77,67 @@ class Pen:
     def w(self, v):
         return max(1, int(v * self.z * SS))
 
+    def j(self, a=2.0):
+        return self.rng.uniform(-a, a) * SS
+
+    def _stroke(self, q, fill, width, closed=False):
+        for k, (amt, wf) in enumerate(((1.6, 1.0), (2.8, 0.45))):
+            qq = [(x + self.j(amt), y + self.j(amt)) for x, y in q]
+            if closed:
+                qq.append(qq[0])
+            wd = max(1, int(width * wf))
+            self.d.line(qq, fill=fill, width=wd, joint="curve")
+            if k == 0 and not closed:
+                r = wd / 2
+                for x, y in (qq[0], qq[-1]):
+                    self.d.ellipse((x - r, y - r, x + r, y + r), fill=fill)
+
     def line(self, pts, width=9, fill=INK):
         q = [self.p(*pt) for pt in pts]
-        self.d.line(q, fill=fill, width=self.w(width), joint="curve")
-        r = self.w(width) / 2
-        for x, y in (q[0], q[-1]):
-            self.d.ellipse((x - r, y - r, x + r, y + r), fill=fill)
+        if len(q) == 2:  # add a midpoint so straight lines bend a little
+            (x0, y0), (x1, y1) = q
+            q = [q[0], ((x0 + x1) / 2, (y0 + y1) / 2), q[1]]
+        self._stroke(q, fill, self.w(width))
+
+    def _loop(self, x, y, rx, ry, n=28):
+        ph = self.rng.uniform(0, 6.28)
+        pts = []
+        for i in range(n):
+            a = 2 * math.pi * i / n
+            k = 1 + 0.025 * math.sin(3 * a + ph)
+            pts.append(self.p(x + rx * k * math.cos(a), y + ry * k * math.sin(a)))
+        return pts
 
     def ellipse(self, x, y, rx, ry, fill=None, outline=INK, width=8):
-        x0, y0 = self.p(x - rx, y - ry)
-        x1, y1 = self.p(x + rx, y + ry)
-        self.d.ellipse((x0, y0, x1, y1), fill=fill, outline=outline, width=self.w(width) if outline else 0)
+        q = self._loop(x, y, rx, ry)
+        if fill is not None:
+            ox, oy = self.j(3), self.j(3)
+            self.d.polygon([(a + ox, b + oy) for a, b in q], fill=fill)
+        if outline:
+            self._stroke(q, outline, self.w(width), closed=True)
 
     def poly(self, pts, fill, outline=INK, width=8):
         q = [self.p(*pt) for pt in pts]
-        self.d.polygon(q, fill=fill)
+        if fill is not None:
+            ox, oy = self.j(3.5), self.j(3.5)
+            self.d.polygon([(a + ox, b + oy) for a, b in q], fill=fill)
         if outline:
-            self.d.line(q + [q[0]], fill=outline, width=self.w(width), joint="curve")
+            self._stroke(q, outline, self.w(width), closed=True)
 
     def arc(self, x, y, rx, ry, a0, a1, width=7, fill=INK):
-        x0, y0 = self.p(x - rx, y - ry)
-        x1, y1 = self.p(x + rx, y + ry)
-        self.d.arc((x0, y0, x1, y1), a0, a1, fill=fill, width=self.w(width))
+        n = max(6, int(abs(a1 - a0) / 12))
+        q = [self.p(x + rx * math.cos(math.radians(a)), y + ry * math.sin(math.radians(a)))
+             for a in np.linspace(a0, a1, n)]
+        self._stroke(q, fill, self.w(width))
+
+    def hatch(self, x0, y0, x1, y1, step=22, width=3, fill=(120, 95, 80)):
+        """Diagonal pencil hatching inside a box."""
+        x = x0
+        while x < x1 + (y1 - y0):
+            a = (max(x0, x - (y1 - y0)), min(y1, y0 + (x - x0)))
+            b = (min(x, x1), y0 + max(0, x - x1))
+            self._stroke([self.p(*a), self.p(*b)], fill, self.w(width))
+            x += step
 
     def rect(self, x0, y0, x1, y1, fill, outline=INK, width=8):
         self.poly([(x0, y0), (x1, y0), (x1, y1), (x0, y1)], fill, outline, width)
@@ -123,6 +175,10 @@ def head(pen, x, y, r, facing, eyes="open", mouth=0.0, brows=None, hair="kid", l
         else:
             pen.ellipse(cx, cy, r * 0.13, r * 0.15, fill=(255, 255, 255), width=4)
             pen.ellipse(cx + facing * r * 0.05, cy, r * 0.07, r * 0.08, fill=INK, outline=None)
+            pen.ellipse(cx + facing * r * 0.02, cy - r * 0.04, r * 0.025, r * 0.025, fill=(255, 255, 255), outline=None)
+    if hair == "kid":  # rosy cheeks
+        for dx in (-0.55, 0.55):
+            pen.ellipse(ex + dx * r * 0.9, y + r * 0.22, r * 0.14, r * 0.08, fill=(230, 120, 110), outline=None)
     if brows == "smug":
         bx = ex
         pen.line([(bx - r * 0.45, y - r * 0.38), (bx - r * 0.15, y - r * 0.45)], width=5)
@@ -155,6 +211,9 @@ def kid(pen, x, hip_y, t, pose, facing=-1, mouth=0.0, eyes="open", brows=None, s
         lean = 0
         arms = {"finger": ((-45, -20), (150, 168)), "point": ((-45, -20), (95, 92)),
                 "salute": ((-45, -20), (135, 245)), "stand": ((-45, -20), (40, 20))}[pose]
+    gy = FLOOR + 4
+    for k in range(4):
+        pen.line([(x - 50 * s + k * 8, gy + k * 4), (x + 50 * s - k * 8, gy + k * 4)], width=3, fill=(170, 150, 125))
     # legs + slippers
     for a in legs:
         fx, fy = limb(x, hip_y, L, a, facing)
@@ -189,6 +248,33 @@ def room(pen, t, door_open, parents_awake=False, show_parents=True, window_flap=
     pen.rect(-1500, -2000, 2600, FLOOR, fill=WALL, outline=None)
     pen.rect(-1500, FLOOR, 2600, 3500, fill=FLOOR_C, outline=None)
     pen.line([(-1500, FLOOR), (2600, FLOOR)], width=7)
+    # wallpaper stripes, floorboards
+    for x in range(-600, 1500, 70):
+        pen.line([(x, 560), (x, FLOOR - 6)], width=3, fill=(224, 214, 196))
+    for y in (FLOOR + 70, FLOOR + 170, FLOOR + 310):
+        for x0 in range(-600, 1500, 320):
+            pen.line([(x0 + (y % 90), y), (x0 + (y % 90) + 250, y)], width=3, fill=(185, 165, 140))
+    # framed dinosaur picture
+    pen.rect(250, 820, 400, 940, fill=(250, 246, 235), width=7)
+    pen.line([(275, 915), (320, 870), (345, 885), (375, 860)], width=4, fill=(90, 150, 90))
+    pen.ellipse(372, 855, 10, 8, fill=(90, 150, 90), width=3)
+    # rug
+    pen.ellipse(640, FLOOR + 55, 250, 38, fill=(205, 95, 85), width=6)
+    for k in range(9):
+        x = 430 + k * 50
+        pen.line([(x, FLOOR + 48), (x + 25, FLOOR + 62), (x + 50, FLOOR + 48)], width=3, fill=(250, 220, 160))
+    # toy blocks by the door
+    for k, (bx, col) in enumerate(((905, (90, 140, 220)), (945, (240, 190, 60)))):
+        pen.rect(bx, FLOOR - 36, bx + 36, FLOOR, fill=col, width=5)
+    pen.rect(922, FLOOR - 70, 958, FLOOR - 36, fill=(220, 80, 80), width=5)
+    # bedside lamp (left of the headboard)
+    pen.rect(-60, 1100, 40, FLOOR, fill=(170, 120, 80), width=7)
+    pen.line([(-10, 1100), (-10, 1035)], width=6)
+    pen.poly([(-45, 1035), (25, 1035), (10, 985), (-30, 985)], fill=(255, 220, 130), width=6)
+    for a in (-150, -120, -60, -30):
+        r0, r1 = 70, 95
+        ca, sa = math.cos(math.radians(a)), math.sin(math.radians(a))
+        pen.line([(-10 + r0 * ca, 1010 + r0 * sa), (-10 + r1 * ca, 1010 + r1 * sa)], width=4, fill=(230, 170, 60))
     # window with moon
     pen.rect(560, 700, 690, 860, fill=(40, 52, 110), width=9)
     pen.ellipse(655, 738, 24, 24, fill=(250, 245, 215), outline=None)
@@ -211,6 +297,7 @@ def room(pen, t, door_open, parents_awake=False, show_parents=True, window_flap=
     # bed
     pen.rect(60, 980, 100, FLOOR, fill=(70, 80, 130), width=8)
     pen.rect(100, 1120, 500, 1175, fill=(160, 105, 70), width=8)
+    pen.hatch(110, 1145, 490, 1170, step=26, fill=(120, 75, 50))
     pen.line([(480, 1175), (480, FLOOR)], width=10)
     pen.ellipse(195, 1100, 95, 28, fill=(255, 255, 255), width=7)
     if show_parents and not parents_awake == "up":
@@ -239,6 +326,10 @@ def parents_up(pen, t):
             pen.line([(x + side * 30, 1015), (x + side * 48, 1060), (x + side * 18, 1088)], width=9)
             pen.ellipse(x + side * 18, 1088, 9, 9, fill=SKIN, width=4)
         head(pen, x + jit, 1000 - r * 0.95, r, 1, eyes="huge", mouth="O", brows="shock", hair=hair, look=-0.28)
+        for a in (-140, -110, -70, -40):
+            ca, sa = math.cos(math.radians(a)), math.sin(math.radians(a))
+            hy = 1000 - r * 0.95
+            pen.line([(x + ca * r * 1.3, hy + sa * r * 1.3), (x + ca * r * 1.75, hy + sa * r * 1.75)], width=5)
         # sweat drop
         dy = (t * 120) % 60
         pen.ellipse(x + r * 0.9, 1000 - r * 1.2 + dy, 7, 11, fill=(150, 200, 255), width=3)
@@ -267,11 +358,11 @@ def speed_lines(pen, x, y, t):
 # ----------------------------------------------------------------- frames
 
 
-def frame(gt, m):
+def frame(gt, m, seed=0):
     img = Image.new("RGB", (W * SS, H * SS), WALL)
     if gt < 1.0:  # bursting in
         z = lerp(1.9, 1.3, ease_io((gt - 0.45) / 0.55))
-        pen = Pen(img, lerp(780, 480, ease_io((gt - 0.45) / 0.55)), lerp(1060, 1060, 0), z)
+        pen = Pen(img, lerp(780, 480, ease_io((gt - 0.45) / 0.55)), lerp(1060, 1060, 0), z, seed=seed)
         room(pen, gt, door_open=ease_out(gt / 0.12))
         if gt < 0.15:
             zzz(pen, gt)
@@ -284,7 +375,7 @@ def frame(gt, m):
     elif gt < 2.5:  # the professor
         k = ease_io((gt - 1.0) / 1.5)
         z = lerp(2.1, 2.5, k) + 0.08 * kick(gt, 1.24, 0.12) + 0.08 * kick(gt, 2.32, 0.12)
-        pen = Pen(img, 590, 990, z)
+        pen = Pen(img, 590, 990, z, seed=seed)
         room(pen, gt, 1.0)
         sway = 6 * math.sin(gt * 5)
         kid(pen, 600 + sway, FLOOR - 106, gt, "finger", mouth=m, eyes="closed", s=1.15)
@@ -293,17 +384,17 @@ def frame(gt, m):
         z = lerp(1.75, 1.85, (gt - 2.5) / 1.8) + 0.4 * punch
         cx = lerp(390, 470, punch)
         sx = 18 * kick(gt, 3.30, 0.15) * math.sin(gt * 70)
-        pen = Pen(img, cx, 1040, z, sx=sx)
+        pen = Pen(img, cx, 1040, z, sx=sx, seed=seed)
         room(pen, gt, 1.0, parents_awake=True)
         kid(pen, 590, FLOOR - 106, gt, "point", mouth=m, eyes="open", brows="smug", s=1.15)
     elif gt < 5.65:  # frozen parents
         k = ease_io((gt - 4.3) / 1.35)
         sx = 26 * kick(gt, 4.3, 0.14) * math.sin(gt * 80)
-        pen = Pen(img, 240, lerp(1010, 990, k), lerp(2.4, 2.85, k), sx=sx)
+        pen = Pen(img, 240, lerp(1010, 990, k), lerp(2.4, 2.85, k), sx=sx, seed=seed)
         room(pen, gt, 1.0, show_parents=False)
         parents_up(pen, gt)
     else:  # until we meet again
-        pen = Pen(img, 420, 1030, 1.6)
+        pen = Pen(img, 420, 1030, 1.6, seed=seed)
         room(pen, gt, 1.0, show_parents=False, window_flap=clamp((gt - 7.15) / 0.15, 0, 1))
         parents_up(pen, gt)
         go = clamp((gt - 6.95) / 0.2, 0, 1)
@@ -326,16 +417,26 @@ def main(voice_path, out):
          "-r", str(FPS), "-i", "-", "-c:v", "libx264", "-preset", "medium", "-crf", "20", "-tune", "animation",
          "-pix_fmt", "yuv420p", str(tmp)], stdin=subprocess.PIPE)
     n = int(round(END * FPS))
-    for i in range(n):
+    maps, paper = st.make_boil_maps(n=3, amp=1.6), st.make_paper()
+    # draw on twos: a new drawing every 2 frames, held for both
+    for di in range((n + 1) // 2):
+        i = 2 * di
         gt = i / FPS
-        f = frame(gt, track[i]).convert("RGBA")
-        cap = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-        hl.draw_caption(cap, gt)
-        f.alpha_composite(cap)
-        a = np.asarray(f.convert("RGB"), np.float32)
-        if gt > END - 0.3:
-            a *= clamp((END - gt) / 0.3, 0, 1)
-        ff.stdin.write(a.astype(np.uint8).tobytes())
+        m = max(track[i], track[min(i + 1, len(track) - 1)])
+        f = np.asarray(frame(gt, m, seed=di), np.float32)
+        mx, my = maps[di % len(maps)]
+        f = cv2.remap(f, mx, my, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT) * paper
+        img = Image.fromarray(np.clip(f, 0, 255).astype(np.uint8)).convert("RGBA")
+        for k in range(2 if i + 1 < n else 1):
+            t = (i + k) / FPS
+            cap = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+            hl.draw_caption(cap, t)
+            out = img.copy()
+            out.alpha_composite(cap)
+            a = np.asarray(out.convert("RGB"), np.float32)
+            if t > END - 0.3:
+                a *= clamp((END - t) / 0.3, 0, 1)
+            ff.stdin.write(a.astype(np.uint8).tobytes())
     ff.stdin.close()
     ff.wait()
     subprocess.run(["ffmpeg", "-loglevel", "error", "-y", "-i", str(tmp), "-i", str(voice_path), "-c:v", "copy",
