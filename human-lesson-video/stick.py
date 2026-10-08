@@ -431,9 +431,9 @@ def main(voice_path, out):
             t = (i + k) / FPS
             cap = Image.new("RGBA", (W, H), (0, 0, 0, 0))
             hl.draw_caption(cap, t)
-            out = img.copy()
-            out.alpha_composite(cap)
-            a = np.asarray(out.convert("RGB"), np.float32)
+            comp = img.copy()
+            comp.alpha_composite(cap)
+            a = np.asarray(comp.convert("RGB"), np.float32)
             if t > END - 0.3:
                 a *= clamp((END - t) / 0.3, 0, 1)
             ff.stdin.write(a.astype(np.uint8).tobytes())
