@@ -114,6 +114,9 @@ def face(pen, x, y, r, look, facing, eyes="open", mouth=0.0, brows=None, t=0.0):
             for k in range(2):
                 ty = cy + r * 0.25 + ((t * 300 + k * 40) % (r * 1.2))
                 pen.ellipse(cx, ty, r * 0.06, r * 0.09, fill=(120, 180, 255), width=2)
+    if brows == "neutral" and eyes not in ("closed",):
+        for dx in (-0.32, 0.32):
+            pen.line([(ex + dx * r - r * 0.14, y - r * 0.46), (ex + dx * r + r * 0.14, y - r * 0.48)], width=5)
     if brows == "up":
         for dx in (-0.32, 0.32):
             pen.arc(ex + dx * r, y - r * 0.52, r * 0.17, r * 0.1, 200, 340, width=5)
@@ -160,56 +163,83 @@ POSES = {
 }
 
 
+def tube(pen, pts, width, fill):
+    """Outlined limb: ink outline with a coloured core."""
+    pen.line(pts, width=width + 7, fill=INK)
+    pen.line(pts, width=width, fill=fill)
+
+
+GESTURE_POSES = ("talk", "point", "shrug", "rest", "think")
+
+
 def person(pen, x, hip_y, s, look, facing=1, pose="rest", mouth=0.0, eyes="open", brows=None, t=0.0,
            sitting=False, lean=0.0, walk=False, prop=None, kick=0.0):
     r, T, ua, fa = 40 * s, 95 * s, 50 * s, 48 * s
     hc = look["pants"]
+    ph = (x * 0.0137) % 6.28  # per-character phase so people don't move in sync
+    talk = float(mouth) if isinstance(mouth, (int, float)) else (0.8 if mouth == "laugh" else 0.0)
+    talking = talk > 0.05
     if walk:
-        ph = t * 2 * math.pi * 1.8
-        hip_y -= abs(math.sin(ph)) * 6 * s
-    nx, ny = x + facing * lean * s, hip_y - T
-    hx, hy = nx, ny - r * 0.95
+        hip_y -= abs(math.sin(t * 2 * math.pi * 1.8)) * 6 * s
+    # idle life: breathing + gentle sway, extra bob while talking
+    lean = lean + 2.0 * math.sin(t * 0.9 + ph) + (3.0 * math.sin(t * 7 + ph) if talking else 0.0)
+    breathe = 2.5 * s * math.sin(t * 2.3 + ph)
+    nx, ny = x + facing * lean * s, hip_y - T + breathe
+    nod = (4 * s * math.sin(t * 11 + ph) * min(1.0, talk * 1.4)) if talking else 0.0
+    hx, hy = nx + facing * 2 * s * math.sin(t * 1.3 + ph), ny - r * 0.95 + nod
+    # blink every few seconds
+    if eyes in ("open", "half", "up") and ((t + ph) % 3.4) < 0.13:
+        eyes = "closed"
     shoulders = [(nx - facing * 13 * s, ny + 12 * s), (nx + facing * 13 * s, ny + 12 * s)]
-    targets = POSES[pose]
-    if walk:
-        sw = math.sin(t * 2 * math.pi * 1.8) * 35 * s
-        if pose == "walk":
-            targets = ((-sw / s, 100), (sw / s, 100))
+    targets = [list(p) for p in POSES[pose]]
+    if walk and pose == "walk":
+        sw = math.sin(t * 2 * math.pi * 1.8) * 35
+        targets = [[-sw, 100], [sw, 100]]
+    if talking and pose in GESTURE_POSES:  # talking hands
+        g = min(1.0, talk * 1.5)
+        targets[1][0] += (14 * math.sin(t * 5.3 + ph)) * g + (25 if pose == "rest" else 0) * g
+        targets[1][1] += (-22 * abs(math.sin(t * 4.1 + ph)) - (45 if pose == "rest" else 0)) * g
+        if pose == "shrug":
+            targets[0][1] -= 12 * abs(math.sin(t * 4.1 + ph)) * g
+    sleeve = look["shirt"]
 
     def arm(i):
         sx, sy = shoulders[i]
         tx, ty = targets[i]
         tx, ty = nx + facing * tx * s, ny + ty * s
         (ex, ey), (px, py) = ik(sx, sy, tx, ty, ua, fa)
-        pen.line([(sx, sy), (ex, ey), (px, py)], width=9)
-        pen.ellipse(px, py, 8 * s, 8 * s, fill=look["skin"], width=4)
+        tube(pen, [(ex, ey), (px, py)], 7 * s, look["skin"])
+        tube(pen, [(sx, sy), (ex, ey)], 9 * s, sleeve)
+        pen.ellipse(px, py, 9 * s, 9 * s, fill=look["skin"], width=5)
         return px, py
 
+    if not sitting:  # soft ground shadow
+        pen.ellipse(x, hip_y + 102 * s, 46 * s, 9 * s, fill=(0, 0, 0) if False else (150, 140, 130), outline=None)
     arm(0)
     # legs
     if sitting:
         for k, off in enumerate((-8, 8)):
             kx, ky = x + facing * 52 * s, hip_y + off * s * 0.3 - kick * 28 * s * abs(math.sin(t * 18 + k * 1.6))
             fx, fy = kx + facing * 6 * s, hip_y + 58 * s
-            pen.line([(x, hip_y), (kx, ky), (fx, fy)], width=12, fill=hc)
-            pen.ellipse(fx + facing * 9 * s, fy, 15 * s, 8 * s, fill=(250, 250, 250), width=5)
+            tube(pen, [(x, hip_y), (kx, ky), (fx, fy)], 11 * s, hc)
+            pen.ellipse(fx + facing * 9 * s, fy, 16 * s, 9 * s, fill=(250, 250, 250), width=5)
     else:
         if walk:
-            ph = t * 2 * math.pi * 1.8
-            angs = (30 * math.sin(ph), -30 * math.sin(ph))
+            w = t * 2 * math.pi * 1.8
+            angs = (30 * math.sin(w), -30 * math.sin(w))
         else:
-            angs = (10, -10)
+            angs = (8, -8)
         for a in angs:
             fx, fy = x + math.sin(math.radians(a)) * 100 * s * facing, hip_y + math.cos(math.radians(a)) * 100 * s
-            pen.line([(x, hip_y), (fx, fy)], width=11, fill=INK if not look.get("dress") else INK)
-            pen.ellipse(fx + facing * 9 * s, fy, 15 * s, 8 * s, fill=(250, 250, 250), width=5)
-    # shirt / dress
+            tube(pen, [(x, hip_y), (fx, fy)], 10 * s, INK if look.get("dress") else hc)
+            pen.ellipse(fx + facing * 9 * s, fy, 16 * s, 9 * s, fill=(250, 250, 250), width=5)
+    # shirt / dress (slightly rounded torso)
     bot = hip_y + (45 * s if look.get("dress") else 8)
     wdt = 44 if look.get("dress") else 32
-    pen.poly([(nx - 26 * s, ny + 6), (nx + 26 * s, ny + 6), (x + wdt * s, bot), (x - wdt * s, bot)], fill=look["shirt"], width=7)
-    if look.get("dress") is None and not sitting:
-        pass
-    face(pen, hx, hy, r, look, facing, eyes=eyes, mouth=mouth, brows=brows, t=t)
+    pen.poly([(nx - 22 * s, ny + 2), (nx, ny - 4 * s), (nx + 22 * s, ny + 2), (nx + 28 * s, ny + 20 * s),
+              (x + wdt * s, bot), (x - wdt * s, bot), (nx - 28 * s, ny + 20 * s)], fill=look["shirt"], width=7)
+    pen.line([(nx, ny - 2), (hx, hy + r * 0.7)], width=7 * s, fill=look["skin"])  # neck
+    face(pen, hx, hy, r, look, facing, eyes=eyes, mouth=mouth, brows=brows if brows else "neutral", t=t)
     px, py = arm(1)
     if prop == "phone":
         pen.poly([(px - 14 * s, py - 30 * s), (px + 14 * s, py - 30 * s), (px + 14 * s, py + 6 * s), (px - 14 * s, py + 6 * s)],
