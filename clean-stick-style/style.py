@@ -174,12 +174,12 @@ def stickman(c, x, hip, look, facing=1, mouth=0.0, eyes="open", brows="flat", po
 
 def pov_title(img, text1, text2):
     d = ImageDraw.Draw(img)
-    f = ImageFont.truetype(TITLE_FONT, 50 * SS)
+    f = ImageFont.truetype(TITLE_FONT, 42 * SS)
     w = max(f.getlength(text1), f.getlength(text2)) + 60 * SS
     x0 = (W * SS - w) / 2
-    d.rounded_rectangle((x0, 150 * SS, x0 + w, 300 * SS), radius=16 * SS, fill=WHITE)
+    d.rounded_rectangle((x0, 70 * SS, x0 + w, 196 * SS), radius=16 * SS, fill=WHITE)
     for i, tx in enumerate((text1, text2)):
-        d.text(((W * SS - f.getlength(tx)) / 2, (165 + i * 64) * SS), tx, font=f, fill=INK)
+        d.text(((W * SS - f.getlength(tx)) / 2, (82 + i * 54) * SS), tx, font=f, fill=INK)
 
 
 def caption(img, words, active, y=1500):
